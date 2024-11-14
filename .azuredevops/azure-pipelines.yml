@@ -1,0 +1,414 @@
+variables:
+  # common
+  NODE_OPTIONS: --max_old_size=16384
+  YARN_CACHE_FOLDER: $(Pipeline.Workspace)/.yarn
+  APPCENTER_OUTPUT_DIRECTORY: $(Build.ArtifactStagingDirectory)/build
+  APPCENTER_BUILD_ID: $(Build.BuildNumber)
+  APPCENTER_SOURCE_DIRECTORY: $(Build.Repository.LocalPath)
+  APPCENTER_REACTNATIVE_PACKAGE: package.json
+  # ios
+  APPLE_APP_ID: 
+  APPLE_DEVELOPMENT_TEAM: 
+  APPLE_PROVISIONING_PROFILE_UUID: 
+  APPLE_CERTIFICATE_FILE: Certificates.p12
+  APPLE_CERTIFICATE_PSW: 
+  APPLE_PROVISIONING_FILE: 
+  APPLE_APP_PROVISIONING_PROFILE_UUID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxx
+  APPLE_APP_ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxx
+  APPLE_DEV_TEAM: XXXXXXXX
+  APPLE_APP_NAME: com.xxx.xxx
+  XCODE_VERSION: '15.4'
+  TestSDK: iphonesimulator
+  SDK: ''
+  APPCENTER_XCODE_PROJECT: ios/YourApp.xcworkspace
+  APPCENTER_XCODE_WORKSPACE: ios/YourApp.xcworkspace
+  APPCENTER_XCODE_SCHEME: YourApp
+  NO_FLIPPER: 1
+  # android
+  JAVA_HOME: $(JAVA_HOME_17_X64)
+  KEY_ALIAS: 
+  KEY_PASSWORD: 
+  KEYSTORE_PASSWORD: 
+  KEYSTORE_FILE: 
+  KEYSTORE_ALIAS: 
+
+jobs:
+  - job: SetupPipeline
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+      - checkout: self
+        clean: true
+        persistCredentials: true
+
+      - task: PowerShell@2
+        displayName: Install build scripts
+        continueOnError: true
+        inputs:
+          targetType: inline
+          script: |
+            Invoke-WebRequest -Uri 'https://appcenterbuildassets.azureedge.net/buildscripts/appcenter-build-assets-latest.zip' -OutFile 'appcenter-build-assets-latest.zip'
+            if (Test-Path ./cicd-scripts) { Remove-Item -Path ./cicd-scripts -Force -Recurse }
+            New-Item -ItemType directory -Path 'cicd-scripts' | Out-Null
+            unzip -q -d 'cicd-scripts' 'appcenter-build-assets-latest.zip'
+          failOnStderr: true
+      - task: UseNode@1
+        inputs:
+          version: 18.x
+          
+      - task: Cache@2
+        displayName: Cache Yarn packages
+        inputs:
+          key: '"yarn" | "$(Agent.OS)" | yarn.lock'
+          restoreKeys: |
+            "yarn" | "$(Agent.OS)"
+          path: $(YARN_CACHE_FOLDER)
+        
+      - script: |
+          yarn install
+        displayName: Yarn Install
+
+      - task: PublishPipelineArtifact@1
+        inputs:
+          targetPath: './cicd-scripts'
+          artifactName: 'scripts'
+          publishLocation: 'pipeline'
+        displayName: 'Publish common Scripts'
+      - task: PublishPipelineArtifact@1
+        inputs:
+          targetPath: ' $(Build.SourcesDirectory)/node_modules'
+          artifactName: 'node_modules'
+          publishLocation: 'pipeline'
+        displayName: 'Publish node_modules'
+
+      - script: |
+          git config --global user.email "whatever@whaterver.com"
+          git config --global user.name "Azure DevOps Pipeline"
+          yarn version --patch
+          git push origin HEAD:$(Build.SourceBranchName) --follow-tags
+        displayName: 'package.json Bump patch version and push'
+
+  - job: BuildApple
+    condition: and(succeeded(), true)
+    dependsOn: SetupPipeline
+    displayName: BuildApple
+    pool:
+      vmImage: macOS-14
+    steps:
+      - checkout: self
+        clean: true
+
+      # Cannot use safe variable due to special char in psw
+      - task: InstallAppleCertificate@2
+        displayName: Install Apple certificate
+        inputs:
+          certSecureFile: $(APPLE_CERTIFICATE_FILE)
+          certPwd: $(APPLE_CERTIFICATE_PSW)
+      - task: InstallAppleProvisioningProfile@0
+        displayName: Install Apple provisioning profile
+        inputs:
+          provProfileSecureFile: $(APPLE_PROVISIONING_FILE)
+      - task: DownloadPipelineArtifact@2
+        inputs:
+          artifact: 'scripts'
+          targetPath: $(Build.SourcesDirectory)/scripts
+        displayName: 'Download Artifact scripts'
+
+      - task: UseNode@1
+        inputs:
+          version: 18.x
+      - task: Cache@2
+        displayName: Cache Yarn packages
+        inputs:
+          key: '"yarn" | "$(Agent.OS)" | yarn.lock'
+          restoreKeys: |
+            "yarn" | "$(Agent.OS)"
+          path: $(YARN_CACHE_FOLDER)
+      - script: |
+          yarn install
+        displayName: Yarn Install
+      - task: Bash@3
+        displayName: Set Version from package.json
+        inputs:
+          filePath: mobile-prebuild.sh
+      - script: |
+          echo 'run npx react-native'
+          npx react-native bundle --entry-file index.js --platform ios --dev false --verbose --reset-cache --bundle-output dummy-sourcemap-main.jsbundle --sourcemap-output index.ios.map
+        displayName: Generate source map
+      - task: CmdLine@1
+        displayName: Copy source map file to staging
+        inputs:
+          filename: sh
+          arguments: -c "mkdir -p $(Build.ArtifactStagingDirectory)/symbols && cp index.ios.map $(Build.ArtifactStagingDirectory)/symbols/"
+          failOnStandardError: true
+      - task: Bash@3
+        displayName: Tag build
+        inputs:
+          filePath: $(Build.SourcesDirectory)/scripts/emit-tags.sh
+          arguments: javascript,xcode,signed,distribution
+          
+      - task: Cache@2
+        displayName: Cache Cocoa Pods
+        inputs:
+          key: 'pods | cocoapods | "$(Agent.OS)" | ios/Podfile.lock'
+          restoreKeys: |
+            pods | cocoapods | "$(Agent.OS)"
+          path: $(Build.SourcesDirectory)/ios/Pods
+      - task: CocoaPods@0
+        displayName: Pod install
+        inputs:
+          workingDirectory: ios
+
+      - task: Bash@3
+        displayName: Determine project file path
+        inputs:
+          filePath: $(Build.SourcesDirectory)/scripts/detect-autogenerated-workspace.sh
+          arguments: ios YourApp
+          workingDirectory: $(Build.SourcesDirectory)
+      - task: Bash@3
+        displayName: Determine signing style and pods update
+        inputs:
+          filePath: $(Build.SourcesDirectory)/scripts/determine-signing-style-and-pods-update.sh
+          workingDirectory: $(Build.SourcesDirectory)
+      - task: CmdLine@1
+        displayName: Set Bundle version
+        inputs:
+          filename: /usr/bin/find
+          arguments: . -name "*Info.plist" -exec /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(Build.BuildNumber)" {} ;
+          
+      - task: CmdLine@1
+        displayName: Xcode Set path
+        inputs:
+          filename: /bin/bash
+          arguments: -c "sudo xcode-select --switch /Applications/Xcode_$(XCODE_VERSION).app/Contents/Developer"
+      - task: CmdLine@1
+        displayName: Xcode Update build settings
+        continueOnError: true
+        inputs:
+          filename: node
+          workingFolder: $(Build.SourcesDirectory)
+          arguments: >-
+            $(Build.SourcesDirectory)/scripts/build-xcproject-analyzer/node_modules/@build/xcproject-analyzer-script/script/bin.js
+            --app-id="$(APPLE_APP_ID)"
+            --xc-workspace-path="$(APPCENTER_XCODE_WORKSPACE)"
+            --scheme="YourApp" --code-sign-style="$(SIGNING_OPTION)"
+            --app-provisioning-profile-uuid="$(APPLE_APP_PROVISIONING_PROFILE_UUID)"
+            --code-sign-identity="$(APPLE_CERTIFICATE_SIGNING_IDENTITY)"
+            --development-team="$(APPLE_DEV_TEAM)"
+            --app-bundle-identifier="$(APPLE_APP_NAME)"
+      - task: Xcode@4
+        displayName: Xcode build (signed)
+        inputs:
+          actions: clean
+          configuration: ''
+          xcWorkspacePath: $(APPCENTER_XCODE_PROJECT)
+          scheme: YourApp
+          xcodeDeveloperDir: /Applications/Xcode_$(XCODE_VERSION).app/Contents/Developer
+          packageApp: true
+          archivePath: $(Agent.BuildDirectory)/output/build/archive
+          exportPath: $(Agent.BuildDirectory)/output/build/export
+          signingIdentity: 
+          signingOption: manual
+          outputPattern: $(Agent.BuildDirectory)/output/build
+      - task: CopyFiles@2
+        displayName: Copy build files to staging
+        inputs:
+          SourceFolder: $(Agent.BuildDirectory)/output/build/export
+          Contents: '**/*.ipa'
+          TargetFolder: $(Build.ArtifactStagingDirectory)/build
+          OverWrite: true
+          flattenFolders: true
+      - task: CopyFiles@2
+        displayName: Copy symbol files to staging
+        inputs:
+          SourceFolder: $(Agent.BuildDirectory)/output/build/archive/YourApp.xcarchive/dSYMs
+          Contents: '**/*.dSYM/**'
+          TargetFolder: $(Build.ArtifactStagingDirectory)/symbols
+          OverWrite: true
+      - task: PublishBuildArtifacts@1
+        displayName: Publish build
+        inputs:
+          PathtoPublish: $(Build.ArtifactStagingDirectory)/build
+          ArtifactName: build
+          TargetPath: \\my\share\$(Build.DefinitionName)\$(Build.BuildNumber)
+      - task: PublishBuildArtifacts@1
+        displayName: Publish symbols
+        continueOnError: true
+        inputs:
+          PathtoPublish: $(Build.ArtifactStagingDirectory)/symbols
+          ArtifactName: symbols
+          TargetPath: \\my\share\$(Build.DefinitionName)\$(Build.BuildNumber)
+      - task: AppStoreRelease@1
+        enabled: false
+        displayName: 'Publish to the App Store TestFlight'
+        inputs:
+          appType: 'iOS'
+          authType: ServiceEndpoint
+          serviceEndpoint: 'appleappstore-connection' 
+          appIdentifier: com.xxx.xxx
+          ipaPath: '$(Build.ArtifactStagingDirectory)/build/**/*.ipa'
+          releaseTrack: 'TestFlight'
+          shouldSkipWaitingForProcessing: true
+          shouldSkipSubmission: false
+          installFastlane: true
+
+  - job: BuildAndroid
+    condition: and(succeeded(), false)
+    dependsOn: SetupPipeline
+    displayName: BuildAndroid
+    pool:
+      name: Azure Pipelines
+      vmImage: ubuntu-latest
+    steps:
+      - checkout: self
+        clean: true
+
+      - task: DownloadSecureFile@1
+        displayName: 'Get KeyStore file'
+        name: KeystoreFile
+        inputs:
+          secureFile: $(KEYSTORE_FILE)
+      - task: DownloadPipelineArtifact@2
+        inputs:
+          artifact: 'scripts'
+          targetPath: $(Build.SourcesDirectory)/scripts
+        displayName: 'Download Artifact scripts'
+      - task: DownloadPipelineArtifact@2
+        inputs:
+          artifact: 'node_modules'
+          targetPath: $(Build.SourcesDirectory)/node_modules
+        displayName: 'Download Artifact node_modules'
+      - task: JavaToolInstaller@0
+        inputs:
+          versionSpec: '17'
+          jdkArchitectureOption: x86
+          jdkSourceOption: 'PreInstalled'
+      - task: UseNode@1
+        inputs:
+          version: 18.x
+      - task: Bash@3
+        displayName: Set Version from Package.json
+        inputs:
+          filePath: mobile-prebuild.sh
+      - script: |
+          chmod -R 777 $(Build.SourcesDirectory)/node_modules
+        displayName: chmod node_modules to run Gradle
+      - task: Bash@3
+        inputs:
+          filePath: scripts/init.sh
+        displayName: Cleanup Gradle
+      - task: Gradle@3
+        displayName: Gradle Build
+        inputs:
+          gradleWrapperFile: 'android/gradlew'
+          tasks: 'clean :app:assembleRelease :app:bundleRelease'
+          javaHomeOption: JDKVersion
+          jdkArchitectureOption: x86
+          publishJUnitResults: false
+          options: |
+            -DAPPCENTER_KEYSTORE_PASSWORD="$(KEYSTORE_PASSWORD)"
+            -DMOBILECENTER_KEYSTORE_PASSWORD="$(KEYSTORE_PASSWORD)"
+            -DAPPCENTER_KEYSTORE_FILE_ID="$(KEYSTORE_FILE)"
+            -DMOBILECENTER_KEYSTORE_FILE_ID="$(KEYSTORE_FILE)"
+            -DAPPCENTER_KEY_ALIAS="$(KEYSTORE_ALIAS)"
+            -DMOBILECENTER_KEY_ALIAS="$(KEYSTORE_ALIAS)"
+            -DAPPCENTER_KEY_PASSWORD="$(KEY_PASSWORD)"
+            -DMOBILECENTER_KEY_PASSWORD="$(KEY_PASSWORD)" -p "android"
+            
+      - task: Bash@3
+        name: androidPostbuild
+        displayName: Android Post Build
+        inputs:
+          filePath: $(Build.SourcesDirectory)/scripts/android-postbuild.sh
+          arguments: $(Build.SourcesDirectory)/android/app/build/outputs/apk
+
+      - task: AndroidSigning@3
+        displayName: Sign APK
+        inputs:
+          apkFiles: $(Build.SourcesDirectory)/android/app/build/**/*.apk
+          apksignerKeystoreFile: $(KEYSTORE_FILE)
+          apksignerKeystorePassword: $(KEYSTORE_PASSWORD)
+          apksignerKeystoreAlias: $(KEYSTORE_ALIAS)
+          apksignerKeyPassword: $(KEY_PASSWORD)
+          apksignerArguments: '-verbose'
+      - task: AndroidSigning@3
+        displayName: Sign AAB
+        inputs:
+          apkFiles: $(Build.SourcesDirectory)/android/app/build/**/*.aab
+          apksignerKeystoreFile: $(KEYSTORE_FILE)
+          apksignerKeystorePassword: $(KEYSTORE_PASSWORD)
+          apksignerKeystoreAlias: $(KEYSTORE_ALIAS)
+          apksignerKeyPassword: $(KEY_PASSWORD)
+          apksignerArguments: '-verbose --min-sdk-version 22'
+        continueOnError: true 
+
+      - task: CopyFiles@2
+        displayName: Copy build files to staging
+        inputs:
+          SourceFolder: $(Build.SourcesDirectory)/android/app/build/outputs
+          Contents: apk/**/*.apk
+          TargetFolder: $(Build.ArtifactStagingDirectory)/build
+          OverWrite: true
+          flattenFolders: true
+      - task: CopyFiles@2
+        displayName: Copy bundle files to staging
+        inputs:
+          SourceFolder: $(Build.SourcesDirectory)/android/app/build/outputs
+          Contents: bundle/**/*.aab
+          TargetFolder: $(Build.ArtifactStagingDirectory)/bundle
+          OverWrite: true
+          flattenFolders: true
+      - task: CopyFiles@2
+        displayName: Copy mapping files to staging
+        inputs:
+          SourceFolder: $(Build.SourcesDirectory)/android/app/build/outputs
+          Contents: mapping/**/mapping.txt
+          TargetFolder: $(Build.ArtifactStagingDirectory)/mapping
+          OverWrite: true
+          flattenFolders: true
+      - task: CopyFiles@2
+        displayName: Copy native symbols files to staging
+        inputs:
+          SourceFolder: $(Build.SourcesDirectory)/android/app/build/outputs/native-debug-symbols/release
+          Contents: '*.zip'
+          TargetFolder: $(Build.ArtifactStagingDirectory)/output
+          OverWrite: true
+          flattenFolders: true
+      - task: PublishBuildArtifacts@1
+        displayName: Publish build
+        continueOnError: true
+        inputs:
+          PathtoPublish: $(Build.ArtifactStagingDirectory)/build
+          ArtifactName: build
+      - task: PublishBuildArtifacts@1
+        displayName: Publish bundle
+        continueOnError: true
+        inputs:
+          PathtoPublish: $(Build.ArtifactStagingDirectory)/bundle
+          ArtifactName: bundle
+      - task: PublishBuildArtifacts@1
+        displayName: Publish mapping
+        continueOnError: true
+        condition: and(succeeded(), startsWith(variables['appcenter_android_postprocess_output.mapping'], true))
+        inputs:
+          PathtoPublish: $(Build.ArtifactStagingDirectory)/mapping
+          ArtifactName: mapping
+      - task: PublishBuildArtifacts@1
+        displayName: Publish native symbols
+        continueOnError: true
+        inputs:
+          PathtoPublish: '$(Build.ArtifactStagingDirectory)/output'
+          ArtifactName: 'output'
+      - task: GooglePlayRelease@4
+        condition: 'and(succeeded(), ne(variables[''Build.Reason''], ''pullRequest''))'
+        inputs:
+          serviceConnection: 'googleplaystore-connection'
+          applicationId: 'com.xxx.xxx'
+          action: 'SingleBundle'
+          bundleFile: '$(Build.ArtifactStagingDirectory)/bundle/**/*.aab'
+          track: 'internal'
+          shouldUploadMappingFile: true
+          mappingFilePath: '$(Build.ArtifactStagingDirectory)/mapping/**/mapping.txt'
+          shouldUploadNativeDebugSymbols: true
+          nativeDebugSymbolsFile: '$(Build.ArtifactStagingDirectory)/output/native-debug-symbols.zip'
+          releaseName: '$(VERSION_NAME)'
