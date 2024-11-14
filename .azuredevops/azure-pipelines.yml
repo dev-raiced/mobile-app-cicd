@@ -82,7 +82,7 @@ jobs:
         displayName: 'Publish node_modules'
 
       - script: |
-          git config --global user.email "whatever@whaterver.com"
+          git config --global user.email "whatever@whatever.com"
           git config --global user.name "Azure DevOps Pipeline"
           yarn version --patch
           git push origin HEAD:$(Build.SourceBranchName) --follow-tags

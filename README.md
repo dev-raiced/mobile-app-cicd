@@ -1,5 +1,7 @@
 # Intro
-This is my Azure DevOps pipeline exported and adapted from Microsoft App Center. As it's going to be retired in March 2025. You can find the instructions how to do your migration and what was changed from App Center Build (which use the same pipeline infra as Azure DevOps).
+Migration of React Native mobile app from Microsoft App Center to Azure DevOps.
+
+This is my Azure DevOps pipeline exported and adapted from Microsoft App Center. As it's going to be retired in March 2025. You can find few instructions how to do your migration and what was changed from App Center Build (which use the same pipeline infra as Azure DevOps).
 
 I will try to keep it up to date with further improvements and new version of XCODE, Android, etc...
 
