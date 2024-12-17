@@ -239,18 +239,17 @@ jobs:
           ArtifactName: symbols
           TargetPath: \\my\share\$(Build.DefinitionName)\$(Build.BuildNumber)
       - task: AppStoreRelease@1
-        enabled: false
         displayName: 'Publish to the App Store TestFlight'
         inputs:
           appType: 'iOS'
           authType: ServiceEndpoint
-          serviceEndpoint: 'appleappstore-connection' 
+          serviceEndpoint: 'your-appleappstore-connection' 
           appIdentifier: com.xxx.xxx
           ipaPath: '$(Build.ArtifactStagingDirectory)/build/**/*.ipa'
           releaseTrack: 'TestFlight'
           shouldSkipWaitingForProcessing: true
           shouldSkipSubmission: false
-          installFastlane: true
+          installFastlane: false
 
   - job: BuildAndroid
     condition: and(succeeded(), false)
@@ -258,7 +257,7 @@ jobs:
     displayName: BuildAndroid
     pool:
       name: Azure Pipelines
-      vmImage: ubuntu-latest
+      vmImage: ubuntu-24.04
     steps:
       - checkout: self
         clean: true
@@ -278,11 +277,6 @@ jobs:
           artifact: 'node_modules'
           targetPath: $(Build.SourcesDirectory)/node_modules
         displayName: 'Download Artifact node_modules'
-      - task: JavaToolInstaller@0
-        inputs:
-          versionSpec: '17'
-          jdkArchitectureOption: x86
-          jdkSourceOption: 'PreInstalled'
       - task: UseNode@1
         inputs:
           version: 18.x
@@ -402,7 +396,7 @@ jobs:
       - task: GooglePlayRelease@4
         condition: 'and(succeeded(), ne(variables[''Build.Reason''], ''pullRequest''))'
         inputs:
-          serviceConnection: 'googleplaystore-connection'
+          serviceConnection: 'your-googleplaystore-connection'
           applicationId: 'com.xxx.xxx'
           action: 'SingleBundle'
           bundleFile: '$(Build.ArtifactStagingDirectory)/bundle/**/*.aab'
