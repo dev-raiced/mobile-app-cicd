@@ -1,36 +1,30 @@
 variables:
-  # common
-  NODE_OPTIONS: --max_old_size=16384
-  YARN_CACHE_FOLDER: $(Pipeline.Workspace)/.yarn
-  APPCENTER_OUTPUT_DIRECTORY: $(Build.ArtifactStagingDirectory)/build
-  APPCENTER_BUILD_ID: $(Build.BuildNumber)
-  APPCENTER_SOURCE_DIRECTORY: $(Build.Repository.LocalPath)
-  APPCENTER_REACTNATIVE_PACKAGE: package.json
-  # ios
-  APPLE_APP_ID: 
-  APPLE_DEVELOPMENT_TEAM: 
-  APPLE_PROVISIONING_PROFILE_UUID: 
-  APPLE_CERTIFICATE_FILE: Certificates.p12
-  APPLE_CERTIFICATE_PSW: 
-  APPLE_PROVISIONING_FILE: 
-  APPLE_APP_PROVISIONING_PROFILE_UUID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxx
-  APPLE_APP_ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxx
-  APPLE_DEV_TEAM: XXXXXXXX
-  APPLE_APP_NAME: com.xxx.xxx
-  XCODE_VERSION: '15.4'
-  TestSDK: iphonesimulator
-  SDK: ''
-  APPCENTER_XCODE_PROJECT: ios/YourApp.xcworkspace
-  APPCENTER_XCODE_WORKSPACE: ios/YourApp.xcworkspace
-  APPCENTER_XCODE_SCHEME: YourApp
-  NO_FLIPPER: 1
-  # android
-  JAVA_HOME: $(JAVA_HOME_17_X64)
-  KEY_ALIAS: 
-  KEY_PASSWORD: 
-  KEYSTORE_PASSWORD: 
-  KEYSTORE_FILE: 
-  KEYSTORE_ALIAS: 
+- group: var-grp-name
+- name: YARN_CACHE_FOLDER
+  value: $(Pipeline.Workspace)/.yarn
+# for script mobile-prebuild.sh
+- name: APPCENTER_BUILD_ID
+  value: $(Build.BuildNumber)
+- name: APPCENTER_SOURCE_DIRECTORY
+  value: $(Build.Repository.LocalPath)
+# android
+- name: KEYSTORE_FILE
+  value: '***'
+# ios
+- name: APPLE_CERTIFICATE_FILE
+  value: '***'
+- name: APPLE_PROVISIONING_FILE
+  value: '***'
+- name: TestSDK
+  value: iphonesimulator
+- name: SDK
+  value: ''
+- name: XCODE_PROJECT
+  value: '***'
+- name: XCODE_WORKSPACE
+  value: '***'
+- name: NO_FLIPPER
+  value: 1
 
 jobs:
   - job: SetupPipeline
@@ -89,7 +83,6 @@ jobs:
         displayName: 'package.json Bump patch version and push'
 
   - job: BuildApple
-    condition: and(succeeded(), true)
     dependsOn: SetupPipeline
     displayName: BuildApple
     pool:
@@ -98,7 +91,6 @@ jobs:
       - checkout: self
         clean: true
 
-      # Cannot use safe variable due to special char in psw
       - task: InstallAppleCertificate@2
         displayName: Install Apple certificate
         inputs:
@@ -170,31 +162,29 @@ jobs:
         inputs:
           filePath: $(Build.SourcesDirectory)/scripts/determine-signing-style-and-pods-update.sh
           workingDirectory: $(Build.SourcesDirectory)
-      - task: CmdLine@1
+      - task: CmdLine@2
         displayName: Set Bundle version
         inputs:
-          filename: /usr/bin/find
-          arguments: . -name "*Info.plist" -exec /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(Build.BuildNumber)" {} ;
-          
-      - task: CmdLine@1
+          script: |
+            /usr/bin/find . -name "*Info.plist" -exec /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(Build.BuildNumber)" {} \;
+      - task: CmdLine@2
         displayName: Xcode Set path
         inputs:
-          filename: /bin/bash
-          arguments: -c "sudo xcode-select --switch /Applications/Xcode_$(XCODE_VERSION).app/Contents/Developer"
-      - task: CmdLine@1
+          script: |
+            /bin/bash -c "sudo xcode-select --switch /Applications/Xcode_$(XCODE_VERSION).app/Contents/Developer"
+      - task: CmdLine@2
         displayName: Xcode Update build settings
         continueOnError: true
         inputs:
-          filename: node
-          workingFolder: $(Build.SourcesDirectory)
-          arguments: >-
-            $(Build.SourcesDirectory)/scripts/build-xcproject-analyzer/node_modules/@build/xcproject-analyzer-script/script/bin.js
-            --app-id="$(APPLE_APP_ID)"
-            --xc-workspace-path="$(APPCENTER_XCODE_WORKSPACE)"
-            --scheme="YourApp" --code-sign-style="$(SIGNING_OPTION)"
-            --app-provisioning-profile-uuid="$(APPLE_APP_PROVISIONING_PROFILE_UUID)"
-            --code-sign-identity="$(APPLE_CERTIFICATE_SIGNING_IDENTITY)"
-            --development-team="$(APPLE_DEV_TEAM)"
+          script: |
+            node $(Build.SourcesDirectory)/scripts/build-xcproject-analyzer/node_modules/@build/xcproject-analyzer-script/script/bin.js \
+            --app-id="$(APPLE_APP_ID)" \
+            --xc-workspace-path="$(XCODE_WORKSPACE)" \
+            --scheme="***" \
+            --code-sign-style="$(SIGNING_OPTION)" \
+            --app-provisioning-profile-uuid="$(APPLE_PROVISIONING_PROFILE_UUID)" \
+            --code-sign-identity="$(APPLE_CERTIFICATE_SIGNING_IDENTITY)" \
+            --development-team="$(APPLE_DEV_TEAM)" \
             --app-bundle-identifier="$(APPLE_APP_NAME)"
       - task: Xcode@4
         displayName: Xcode build (signed)
@@ -252,7 +242,6 @@ jobs:
           installFastlane: false
 
   - job: BuildAndroid
-    condition: and(succeeded(), false)
     dependsOn: SetupPipeline
     displayName: BuildAndroid
     pool:
@@ -299,15 +288,7 @@ jobs:
           javaHomeOption: JDKVersion
           jdkArchitectureOption: x86
           publishJUnitResults: false
-          options: |
-            -DAPPCENTER_KEYSTORE_PASSWORD="$(KEYSTORE_PASSWORD)"
-            -DMOBILECENTER_KEYSTORE_PASSWORD="$(KEYSTORE_PASSWORD)"
-            -DAPPCENTER_KEYSTORE_FILE_ID="$(KEYSTORE_FILE)"
-            -DMOBILECENTER_KEYSTORE_FILE_ID="$(KEYSTORE_FILE)"
-            -DAPPCENTER_KEY_ALIAS="$(KEYSTORE_ALIAS)"
-            -DMOBILECENTER_KEY_ALIAS="$(KEYSTORE_ALIAS)"
-            -DAPPCENTER_KEY_PASSWORD="$(KEY_PASSWORD)"
-            -DMOBILECENTER_KEY_PASSWORD="$(KEY_PASSWORD)" -p "android"
+          workingDirectory: $(Build.SourcesDirectory)/android
             
       - task: Bash@3
         name: androidPostbuild
